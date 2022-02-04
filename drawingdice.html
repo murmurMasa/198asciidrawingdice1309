@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>らくがきサイコロ</title>
+<script src="three.js"></script>
+<script src="cannon.js"></script>
+<script>
+let scene, camera, renderer;        //シーン、カメラ、レンダラー
+let world, dice;                    //物理ワールド、サイコロ
+const canvas = new Array();         //キャンバス
+const context = new Array();
+const c_t = [0, 5, 2, 3, 4, 1]      //テクスチャの順序
+let sx, sy, mouseDown = false;      //始点、マウスが押されたか
+
+const init = () => {
+    //シーン、カメラ、レンダラー、ライト（平行光源、環境光）
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(50, 1, 1, 100);    //カメラ（画角：50、ニアクリップ：1、ファークリップ：100）
+    camera.position.set(5, 10, 5);                          //カメラの位置(10, 5, 0)
+    camera.lookAt(scene.position);                          //カメラは原点を向く
+    renderer = new THREE.WebGLRenderer({antialias:true});
+    renderer.setSize(600, 600);
+    renderer.shadowMap.enabled = true;
+    document.getElementById("renderArea").appendChild(renderer.domElement); //描画エリアに作成
+    const light = new THREE.DirectionalLight("#FFFFFF");                    //白色の平行光源
+    light.position.set(20, 10, 10);
+    light.castShadow = true;                                                //影を落とす
+    scene.add(light);
+    const ambientLight = new THREE.AmbientLight("#666666"); //グレーの環境光
+    scene.add(ambientLight);
+    //物理ワールドの設定
+    world = new CANNON.World();
+    world.gravity.set(0, -9.8, 0);                         //重力加速度を設定
+    world.broadphase = new CANNON.NaiveBroadphase();
+    world.allowSleep = true;                                //物体が動かないようにする
+    //床の作成
+    const green = new THREE.MeshLambertMaterial({color:"#006600"}); //床の色は緑
+    createBox(0, 0, 0, 10, 1, 10, green);                           //床を10×1×10の直方体で作成
+    //テクスチャ用キャンバスをセット
+    for (let i=0; i<6; i++) {
+        canvas[i] = document.getElementById(`canvas_${i}`);         //キャンバスを取得
+        context[i] = canvas[i].getContext("2d");
+        context[i].lineWidth = 4;                                   //線の太さ４，端の形は丸
+        context[i].lineCap = "round";
+        canvas[i].addEventListener("mousedown", startDraw);         //キャンバスにマウスイベントを設定
+        canvas[i].addEventListener("mousemove", draw);
+        canvas[i].addEventListener("mouseup", endDraw);
+        canvas[i].addEventListener("mouseleave", endDraw);
+    }
+    //サイコロの作成
+    const materials = new Array();
+    for (let i=0; i<6; i++) {
+        const texture = new THREE.Texture(canvas[c_t[i]]);          //c_t[i]はテクスチャーの順序
+        materials[i] = new THREE.MeshLambertMaterial({map:texture});
+    }
+    dice = createBox(0, 5, 0, 1, 1, 1, materials, 1);               //辺の長さ１の立方体を作り、６つのキャンバスを各面に割り当てる
+    dice.body.allowSleep = true;
+    clearDice();
+    //物理ワールドの更新＋描画
+    update();
+}
+
+const createBox = (x, y, z, w, h, d, material, mass = 0) => {       //massが0（デフォルト値）の物体は重力の影響を受けない
+    //表示用オブジェクトの作成
+    geometry = new THREE.BoxGeometry(w, h, d);                      //幅ｗ、高さｈ、奥行きｄの直方体を作成
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = true;                                         //影を落とし、受ける
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+    //物理用オブジェクトの作成
+    const body = new CANNON.Body({mass:mass});
+    body.addShape(new CANNON.Box(new CANNON.Vec3(w/2, h/2, d/2)));  //直方体
+    body.position.copy(mesh.position);                              //表示用オブジェクトの位置を物理用オブジェクトにコピー
+    world.addBody(body);
+    return {"mesh":mesh, "body":body};
+}
+
+const update = () => {
+    //物理ワールドの更新
+    world.step(1/60);                                               //60分の1ごとに物理ワールドを更新
+    dice.mesh.position.copy(dice.body.position);                    //物理ワールドのサイコロの位置と傾きを表示用の3D空間にコピー
+    dice.mesh.quaternion.copy(dice.body.quaternion);
+    //サイコロの目の検出
+    if(dice.body.sleepState > 0) {                                  //サイコロが止まっているなら
+        //角度を変換
+        let x = dice.mesh.rotation.x / Math.PI * 180 + 180;         //角度を0度～360度に変換
+        let z = dice.mesh.rotation.z / Math.PI * 180 + 180;
+        x = Math.round(x/10) * 10;                                  //1の位を四捨五入
+        z = Math.round(z/10) * 10;
+        if (x == 360) x = 0;
+        if (z == 360) z = 0;
+        //上の面を取得
+        let index = -1;
+        if (x == 270) index = 1;                                        //X軸とZ軸の角度から上を向いている面を求める
+        if (x == 90) index = 4;
+        if(((x == 180)&&(z == 270))||((x == 0)&&(z ==90))) index = 0;
+        if(((x == 180)&&(z == 90))||((x == 0)&&(z ==270))) index = 5;
+        if(((x == 0)&&(z == 0))||((x == 180)&&(z ==180))) index = 2;
+        if(((x == 180)&&(z == 0))||((x == 0)&&(z ==180))) index = 3;
+        //サイコロの目のキャンバスにスタイルをセット
+        if (index > -1) canvas[index].classList.add("select");          //上の面のキャンバスの枠線を赤にする
+    }
+    //テクスチャの更新許可、描画
+    dice.mesh.material.forEach(elm => elm.map.needsUpdate = true);      //サイコロの各面にキャンバスの反映を許可
+    renderer.render(scene, camera);
+    window.requestAnimationFrame(update);                               //アニメーションを行う
+}
+
+const cast = () => {
+    //サイコロを投げる
+    dice.body.wakeUp();
+    dice.body.position.set(0, 5, 0);                                    //サイコロを上に移動
+    const ax = Math.random() * 20 - 10;                                 //xyzにランダムな回転速度を与える
+    const ay = Math.random() * 20 - 10;
+    const az = Math.random() * 20 - 10;
+    dice.body.angularVelocity.set(ax, ay, az);
+    //キャンバスからスタイルを削除
+    canvas.forEach(elm => elm.classList.remove("select"));
+}
+
+const startDraw = event => {                                //マウスの左ボタンを押したとき
+    //描画開始
+    [sx, sy] = getPoint(event);                             //キャンバス上のマウスの座標を取得
+    mouseDown = true;
+}
+
+const draw = event => {                                     //マウスを動かしたとき
+    //描画
+    if (mouseDown) {                                        //左ボタンを押しているなら
+       const [x, y] = getPoint(event);
+       const index = event.target.id.split("_")[1];         //キャンバスの番号
+       context[index].beginPath();
+       context[index].moveTo(sx, sy);
+       context[index].lineTo(x, y);                         //線を描く
+       context[index].stroke();
+       [sx, sy] = [x, y];                                   //終点を新しい始点として保存
+    }
+}
+
+const endDraw = event => {              //マウスの左ボタンを放したとき
+    //描画終了
+    mouseDown = false;
+}
+
+const getPoint = event => {
+    //マウスカーソルの位置を取得
+    const rect = event.target.getBoundingClientRect();      //キャンバスの矩形情報を取得
+    return[event.clientX-rect.left, event.clientY-rect.top];
+}
+
+const clearDice = () => {
+    //サイコロの目をクリア
+    for (let i=0; i<6; i++) {
+        context[i].fillStyle = `hsl(${i*60}, 100%, 80%)`;   //HSL方式で塗りつぶし色を設定（色相、彩度、明度）
+        context[i].fillRect(0, 0, 128, 128);                //キャンバスを塗りつぶす
+    }
+}
+</script>
+<style>
+canvas {border: medium solid #CCCCCC;}
+.select {border: medium solid #FF0000;}
+</style>
+</head>
+<body onload="init()">
+<p>らくがきサイコロ</p>
+<input type="button" value="サイコロを投げる" onclick="cast()">
+<input type="button" value="クリア" onclick="clearDice()">
+<hr>
+<canvas id="canvas_0" width="128" height="128"></canvas>
+<canvas id="canvas_1" width="128" height="128"></canvas>
+<canvas id="canvas_2" width="128" height="128"></canvas>
+<canvas id="canvas_3" width="128" height="128"></canvas>
+<canvas id="canvas_4" width="128" height="128"></canvas>
+<canvas id="canvas_5" width="128" height="128"></canvas>
+<div id="renderArea"></div>
+</body>
+</html>
